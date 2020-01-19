@@ -71,8 +71,20 @@ public class NameMapper {
 					"volatile",
 					"while"));
 
+	private static final Set<String> INVALID_SOURCEFILE_NAMES = new HashSet<>(
+			Arrays.asList(
+					"Proguard",
+					"lambda",
+					"BUGLY",
+					"Objects",
+					"SourceFile"));
+
 	public static boolean isReserved(String str) {
 		return RESERVED_NAMES.contains(str);
+	}
+
+	public static boolean isInValidSourceFileName(String str) {
+		return INVALID_SOURCEFILE_NAMES.contains(str);
 	}
 
 	public static boolean isValidIdentifier(String str) {

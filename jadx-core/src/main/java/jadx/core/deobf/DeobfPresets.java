@@ -122,6 +122,11 @@ class DeobfPresets {
 			list.add(String.format("f %s = %s", fld.getRawFullId(), fld.getAlias()));
 		}
 		for (MethodInfo mth : deobfuscator.getMthMap().keySet()) {
+			// LY 跳过覆盖函数中未标记名称的那些方法信息的保存
+			if (!mth.isAliasFromPreset()) {
+				continue;
+			}
+
 			list.add(String.format("m %s = %s", mth.getRawFullId(), mth.getAlias()));
 		}
 		Collections.sort(list);

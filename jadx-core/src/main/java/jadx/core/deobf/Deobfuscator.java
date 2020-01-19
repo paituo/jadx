@@ -135,15 +135,22 @@ public class Deobfuscator {
 			boolean aliasFromPreset = false;
 			String aliasToUse = null;
 			for (MethodInfo mth : o.getMethods()) {
+
+				if (mth.getRawFullId().equals("com.jingdong.app.reader.tools.h.a.a(I)V"))
+				{
+					aliasToUse = null;
+				}
+
 				if (mth.isAliasFromPreset()) {
 					aliasToUse = mth.getAlias();
 					aliasFromPreset = true;
 				}
 			}
+
 			for (MethodInfo mth : o.getMethods()) {
 				if (aliasToUse == null) {
 					if (mth.hasAlias() && !mth.isAliasFromPreset()) {
-						mth.setAlias(String.format("mo%d%s", id, prepareNamePart(mth.getName())));
+						mth.setAlias(String.format("ofun_%d%s", id, prepareNamePart(mth.getName())));
 					}
 					aliasToUse = mth.getAlias();
 				}
@@ -354,7 +361,7 @@ public class Deobfuscator {
 		} else {
 			if (!clsMap.containsKey(classInfo)) {
 				String clsShortName = classInfo.getShortName();
-				if (shouldRename(clsShortName) || reservedClsNames.contains(clsShortName)) {
+				if (isExistValidSourceFileName(cls) || shouldRename(clsShortName) || reservedClsNames.contains(clsShortName)) {
 					makeClsAlias(cls);
 				}
 			}
@@ -400,19 +407,32 @@ public class Deobfuscator {
 
 		if (alias == null) {
 			String clsName = classInfo.getShortName();
-			alias = String.format("C%04d%s", clsIndex++, prepareNamePart(clsName));
+			String prvName = "Cls_";
+			if (cls.isAnonymous())
+			{
+				prvName = "ClsAnonymous_";
+			}
+			else if (classInfo.isInner())
+			{
+				prvName = "ClsInner_";
+			}
+
+			alias = String.format("%s%04d%s", prvName, clsIndex++, prepareNamePart(clsName));
 		}
+
 		PackageNode pkg = getPackageNode(classInfo.getPackage(), true);
 		clsMap.put(classInfo, new DeobfClsInfo(this, cls, pkg, alias));
 		return alias;
 	}
 
 	@Nullable
-	private String getAliasFromSourceFile(ClassNode cls) {
+	private String getAliasFromSourceFile(ClassNode cls)
+	{
 		SourceFileAttr sourceFileAttr = cls.get(AType.SOURCE_FILE);
 		if (sourceFileAttr == null) {
 			return null;
 		}
+
 		if (cls.getClassInfo().isInner()) {
 			return null;
 		}
@@ -425,17 +445,52 @@ public class Deobfuscator {
 		if (!NameMapper.isValidAndPrintable(name)) {
 			return null;
 		}
-		for (DeobfClsInfo deobfClsInfo : clsMap.values()) {
-			if (deobfClsInfo.getAlias().equals(name)) {
-				return null;
-			}
-		}
+
 		ClassNode otherCls = cls.root().searchClassByName(cls.getPackage() + '.' + name);
 		if (otherCls != null) {
 			return null;
 		}
-		cls.remove(AType.SOURCE_FILE);
+
+		// LY 判别无效的源文件名称
+		if (NameMapper.isInValidSourceFileName(name)) {
+			return null;
+		}
+//		for (DeobfClsInfo deobfClsInfo : clsMap.values()) {
+//			if (deobfClsInfo.getAlias().equals(name)) {
+//				return null;
+//			}
+//		}
+		// LY 不移除源文件信息
+//		cls.remove(AType.SOURCE_FILE);
 		return name;
+	}
+
+	@Nullable
+	private boolean isExistValidSourceFileName(ClassNode cls)
+	{
+		if (!this.useSourceNameAsAlias) {
+			return false;
+		}
+
+		SourceFileAttr sourceFileAttr = cls.get(AType.SOURCE_FILE);
+		if (sourceFileAttr == null) {
+			return false;
+		}
+
+		if (cls.getClassInfo().isInner()) {
+			return false;
+		}
+		String name = sourceFileAttr.getFileName();
+		if (name.endsWith(".java")) {
+			name = name.substring(0, name.length() - ".java".length());
+		} else if (name.endsWith(".kt")) {
+			name = name.substring(0, name.length() - ".kt".length());
+		}
+		if (!NameMapper.isValidAndPrintable(name)) {
+			return false;
+		}
+
+		return !NameMapper.isInValidSourceFileName(name);
 	}
 
 	@Nullable
@@ -466,6 +521,12 @@ public class Deobfuscator {
 		if (alias != null) {
 			return alias;
 		}
+
+		if (methodInfo.getRawFullId().equals("com.jingdong.app.reader.tools.h.a.a(I)V"))
+		{
+			alias = "";
+		}
+
 		alias = deobfPresets.getForMth(methodInfo);
 		if (alias != null) {
 			mthMap.put(methodInfo, alias);
@@ -479,13 +540,15 @@ public class Deobfuscator {
 	}
 
 	public String makeFieldAlias(FieldNode field) {
-		String alias = String.format("f%d%s", fldIndex++, prepareNamePart(field.getName()));
+		String alias = String.format("%s%d%s", field.getAccessFlags().isStatic() ? "sm_" : "m_",
+									fldIndex++, prepareNamePart(field.getName()));
 		fldMap.put(field.getFieldInfo(), alias);
 		return alias;
 	}
 
 	public String makeMethodAlias(MethodNode mth) {
-		String alias = String.format("m%d%s", mthIndex++, prepareNamePart(mth.getName()));
+		String alias = String.format("%s%d%s", mth.getAccessFlags().isStatic() ? "sfun_" : "fun_",
+										mthIndex++, prepareNamePart(mth.getName()));
 		mthMap.put(mth.getMethodInfo(), alias);
 		return alias;
 	}
@@ -593,9 +656,18 @@ public class Deobfuscator {
 		if (!cls.getClassInfo().getShortName().equals("R")) {
 			return false;
 		}
-		if (!cls.getMethods().isEmpty() || !cls.getFields().isEmpty()) {
+
+		// LY 兼容性修改（R里面有默认的私有沟通函数，代码尺寸为0）
+		if (!cls.getFields().isEmpty()) {
 			return false;
 		}
+
+		for (MethodNode m : cls.getMethods()) {
+			if (!m.getMethodInfo().isConstructor()) {
+				return false;
+			}
+		}
+
 		for (ClassNode inner : cls.getInnerClasses()) {
 			for (MethodNode m : inner.getMethods()) {
 				if (!m.getMethodInfo().isConstructor() && !m.getMethodInfo().isClassInit()) {
