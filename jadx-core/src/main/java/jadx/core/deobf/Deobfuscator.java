@@ -37,6 +37,9 @@ public class Deobfuscator {
 
 	public static final String CLASS_NAME_SEPARATOR = ".";
 	public static final String INNER_CLASS_SEPARATOR = "$";
+	public static final String KOTLIN_METADATA_ANNOTATION = "kotlin.Metadata";
+	public static final String KOTLIN_METADATA_D2_PARAMETER = "d2";
+	public static final String KOTLIN_METADATA_CLASSNAME_REGEX = "(L.*;)";
 
 	private final JadxArgs args;
 	@NotNull
@@ -57,6 +60,7 @@ public class Deobfuscator {
 	private final int maxLength;
 	private final int minLength;
 	private final boolean useSourceNameAsAlias;
+	private final boolean parseKotlinMetadata;
 
 	private int pkgIndex = 0;
 	private int clsIndex = 0;
@@ -70,6 +74,7 @@ public class Deobfuscator {
 		this.minLength = args.getDeobfuscationMinLength();
 		this.maxLength = args.getDeobfuscationMaxLength();
 		this.useSourceNameAsAlias = args.isUseSourceNameAsClassAlias();
+		this.parseKotlinMetadata = args.isParseKotlinMetadata();
 
 		this.deobfPresets = new DeobfPresets(this, deobfMapFile);
 	}
@@ -135,22 +140,15 @@ public class Deobfuscator {
 			boolean aliasFromPreset = false;
 			String aliasToUse = null;
 			for (MethodInfo mth : o.getMethods()) {
-
-				if (mth.getRawFullId().equals("com.jingdong.app.reader.tools.h.a.a(I)V"))
-				{
-					aliasToUse = null;
-				}
-
 				if (mth.isAliasFromPreset()) {
 					aliasToUse = mth.getAlias();
 					aliasFromPreset = true;
 				}
 			}
-
 			for (MethodInfo mth : o.getMethods()) {
 				if (aliasToUse == null) {
 					if (mth.hasAlias() && !mth.isAliasFromPreset()) {
-						mth.setAlias(String.format("ofun_%d%s", id, prepareNamePart(mth.getName())));
+						mth.setAlias(String.format("mo%d%s", id, prepareNamePart(mth.getName())));
 					}
 					aliasToUse = mth.getAlias();
 				}
@@ -361,7 +359,7 @@ public class Deobfuscator {
 		} else {
 			if (!clsMap.containsKey(classInfo)) {
 				String clsShortName = classInfo.getShortName();
-				if (isExistValidSourceFileName(cls) || shouldRename(clsShortName) || reservedClsNames.contains(clsShortName)) {
+				if (shouldRename(clsShortName) || reservedClsNames.contains(clsShortName)) {
 					makeClsAlias(cls);
 				}
 			}
@@ -399,6 +397,18 @@ public class Deobfuscator {
 
 	private String makeClsAlias(ClassNode cls) {
 		ClassInfo classInfo = cls.getClassInfo();
+
+		String metadataClassName = "";
+		String metadataPackageName = "";
+		if (this.parseKotlinMetadata) {
+			String rawClassName = getRawClassNameFromMetadata(cls);
+			if (rawClassName != null) {
+				metadataClassName = rawClassName.substring(rawClassName.lastIndexOf(".") + 1, rawClassName.length() - 1);
+				if (rawClassName.lastIndexOf(".") != -1) {
+					metadataPackageName = rawClassName.substring(1, rawClassName.lastIndexOf("."));
+				}
+			}
+		}
 		String alias = null;
 
 		if (this.useSourceNameAsAlias) {
@@ -406,33 +416,46 @@ public class Deobfuscator {
 		}
 
 		if (alias == null) {
-			String clsName = classInfo.getShortName();
-			String prvName = "Cls_";
-			if (cls.isAnonymous())
-			{
-				prvName = "ClsAnonymous_";
+			if (metadataClassName.isEmpty()) {
+				String clsName = classInfo.getShortName();
+				alias = String.format("C%04d%s", clsIndex++, prepareNamePart(clsName));
+			} else {
+				alias = metadataClassName;
 			}
-			else if (classInfo.isInner())
-			{
-				prvName = "ClsInner_";
-			}
-
-			alias = String.format("%s%04d%s", prvName, clsIndex++, prepareNamePart(clsName));
 		}
-
-		PackageNode pkg = getPackageNode(classInfo.getPackage(), true);
+		PackageNode pkg;
+		if (metadataPackageName.isEmpty()) {
+			pkg = getPackageNode(classInfo.getPackage(), true);
+		} else {
+			pkg = getPackageNode(metadataPackageName, true);
+		}
 		clsMap.put(classInfo, new DeobfClsInfo(this, cls, pkg, alias));
 		return alias;
 	}
 
 	@Nullable
-	private String getAliasFromSourceFile(ClassNode cls)
-	{
+	private String getRawClassNameFromMetadata(ClassNode cls) {
+		if (cls.getAnnotation(KOTLIN_METADATA_ANNOTATION) != null
+				&& cls.getAnnotation(KOTLIN_METADATA_ANNOTATION).getValues().get(KOTLIN_METADATA_D2_PARAMETER) != null
+				&& cls.getAnnotation(KOTLIN_METADATA_ANNOTATION).getValues().get(KOTLIN_METADATA_D2_PARAMETER) instanceof List) {
+			Object rawClassNameObject =
+					((List) cls.getAnnotation(KOTLIN_METADATA_ANNOTATION).getValues().get(KOTLIN_METADATA_D2_PARAMETER)).get(0);
+			if (rawClassNameObject instanceof String) {
+				String rawClassName = ((String) rawClassNameObject).trim().replace("/", ".");
+				if (rawClassName.length() > 1 && rawClassName.matches(KOTLIN_METADATA_CLASSNAME_REGEX)) {
+					return rawClassName;
+				}
+			}
+		}
+		return null;
+	}
+
+	@Nullable
+	private String getAliasFromSourceFile(ClassNode cls) {
 		SourceFileAttr sourceFileAttr = cls.get(AType.SOURCE_FILE);
 		if (sourceFileAttr == null) {
 			return null;
 		}
-
 		if (cls.getClassInfo().isInner()) {
 			return null;
 		}
@@ -445,52 +468,17 @@ public class Deobfuscator {
 		if (!NameMapper.isValidAndPrintable(name)) {
 			return null;
 		}
-
+		for (DeobfClsInfo deobfClsInfo : clsMap.values()) {
+			if (deobfClsInfo.getAlias().equals(name)) {
+				return null;
+			}
+		}
 		ClassNode otherCls = cls.root().searchClassByName(cls.getPackage() + '.' + name);
 		if (otherCls != null) {
 			return null;
 		}
-
-		// LY 判别无效的源文件名称
-		if (NameMapper.isInValidSourceFileName(name)) {
-			return null;
-		}
-//		for (DeobfClsInfo deobfClsInfo : clsMap.values()) {
-//			if (deobfClsInfo.getAlias().equals(name)) {
-//				return null;
-//			}
-//		}
-		// LY 不移除源文件信息
-//		cls.remove(AType.SOURCE_FILE);
+		cls.remove(AType.SOURCE_FILE);
 		return name;
-	}
-
-	@Nullable
-	private boolean isExistValidSourceFileName(ClassNode cls)
-	{
-		if (!this.useSourceNameAsAlias) {
-			return false;
-		}
-
-		SourceFileAttr sourceFileAttr = cls.get(AType.SOURCE_FILE);
-		if (sourceFileAttr == null) {
-			return false;
-		}
-
-		if (cls.getClassInfo().isInner()) {
-			return false;
-		}
-		String name = sourceFileAttr.getFileName();
-		if (name.endsWith(".java")) {
-			name = name.substring(0, name.length() - ".java".length());
-		} else if (name.endsWith(".kt")) {
-			name = name.substring(0, name.length() - ".kt".length());
-		}
-		if (!NameMapper.isValidAndPrintable(name)) {
-			return false;
-		}
-
-		return !NameMapper.isInValidSourceFileName(name);
 	}
 
 	@Nullable
@@ -521,12 +509,6 @@ public class Deobfuscator {
 		if (alias != null) {
 			return alias;
 		}
-
-		if (methodInfo.getRawFullId().equals("com.jingdong.app.reader.tools.h.a.a(I)V"))
-		{
-			alias = "";
-		}
-
 		alias = deobfPresets.getForMth(methodInfo);
 		if (alias != null) {
 			mthMap.put(methodInfo, alias);
@@ -540,15 +522,13 @@ public class Deobfuscator {
 	}
 
 	public String makeFieldAlias(FieldNode field) {
-		String alias = String.format("%s%d%s", field.getAccessFlags().isStatic() ? "sm_" : "m_",
-									fldIndex++, prepareNamePart(field.getName()));
+		String alias = String.format("f%d%s", fldIndex++, prepareNamePart(field.getName()));
 		fldMap.put(field.getFieldInfo(), alias);
 		return alias;
 	}
 
 	public String makeMethodAlias(MethodNode mth) {
-		String alias = String.format("%s%d%s", mth.getAccessFlags().isStatic() ? "sfun_" : "fun_",
-										mthIndex++, prepareNamePart(mth.getName()));
+		String alias = String.format("m%d%s", mthIndex++, prepareNamePart(mth.getName()));
 		mthMap.put(mth.getMethodInfo(), alias);
 		return alias;
 	}
@@ -656,18 +636,9 @@ public class Deobfuscator {
 		if (!cls.getClassInfo().getShortName().equals("R")) {
 			return false;
 		}
-
-		// LY 兼容性修改（R里面有默认的私有沟通函数，代码尺寸为0）
-		if (!cls.getFields().isEmpty()) {
+		if (!cls.getMethods().isEmpty() || !cls.getFields().isEmpty()) {
 			return false;
 		}
-
-		for (MethodNode m : cls.getMethods()) {
-			if (!m.getMethodInfo().isConstructor()) {
-				return false;
-			}
-		}
-
 		for (ClassNode inner : cls.getInnerClasses()) {
 			for (MethodNode m : inner.getMethods()) {
 				if (!m.getMethodInfo().isConstructor() && !m.getMethodInfo().isClassInit()) {
