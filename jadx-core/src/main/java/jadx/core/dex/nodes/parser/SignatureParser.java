@@ -9,11 +9,13 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jadx.api.plugins.input.data.annotations.EncodedValue;
+import jadx.api.plugins.input.data.annotations.IAnnotation;
 import jadx.core.Consts;
 import jadx.core.dex.attributes.IAttributeNode;
-import jadx.core.dex.attributes.annotations.Annotation;
 import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.dex.nodes.GenericTypeParameter;
+import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
 public class SignatureParser {
@@ -33,14 +35,25 @@ public class SignatureParser {
 		mark = 0;
 	}
 
-	@SuppressWarnings("unchecked")
+	@Nullable
 	public static SignatureParser fromNode(IAttributeNode node) {
-		Annotation a = node.getAnnotation(Consts.DALVIK_SIGNATURE);
+		String signature = getSignature(node);
+		if (signature == null) {
+			return null;
+		}
+		return new SignatureParser(signature);
+	}
+
+	@SuppressWarnings("unchecked")
+	@Nullable
+	public static String getSignature(IAttributeNode node) {
+		IAnnotation a = node.getAnnotation(Consts.DALVIK_SIGNATURE);
 		if (a == null) {
 			return null;
 		}
-		String signature = mergeSignature((List<String>) a.getDefaultValue());
-		return new SignatureParser(signature);
+		List<EncodedValue> values = (List<EncodedValue>) a.getDefaultValue().getValue();
+		List<String> strings = Utils.collectionMap(values, ev -> ((String) ev.getValue()));
+		return mergeSignature(strings);
 	}
 
 	private char next() {
@@ -160,10 +173,14 @@ public class SignatureParser {
 		throw new JadxRuntimeException("Can't parse type: " + debugString() + ", unexpected: " + ch);
 	}
 
-	private ArgType consumeObjectType(boolean incompleteType) {
+	private ArgType consumeObjectType(boolean innerType) {
 		mark();
 		int ch;
 		do {
+			if (innerType && lookAhead('.')) {
+				// stop before next nested inner class
+				return ArgType.object(inclusiveSlice());
+			}
 			ch = next();
 			if (ch == STOP_CHAR) {
 				return null;
@@ -172,36 +189,44 @@ public class SignatureParser {
 
 		if (ch == ';') {
 			String obj;
-			if (incompleteType) {
+			if (innerType) {
 				obj = slice().replace('/', '.');
 			} else {
 				obj = inclusiveSlice();
 			}
 			return ArgType.object(obj);
-		} else {
-			// generic type start ('<')
-			String obj = slice();
-			if (!incompleteType) {
-				obj += ';';
-			}
-			ArgType[] genArr = consumeGenericArgs();
-			consume('>');
+		}
+		// generic type start ('<')
+		String obj = slice();
+		if (!innerType) {
+			obj += ';';
+		}
+		ArgType[] genArr = consumeGenericArgs();
+		consume('>');
 
-			ArgType genericType = ArgType.generic(obj, genArr);
-			if (lookAhead('.')) {
-				consume('.');
-				next();
-				// type parsing not completed, proceed to inner class
-				ArgType inner = consumeObjectType(true);
-				if (inner == null) {
-					throw new JadxRuntimeException("No inner type found: " + debugString());
-				}
-				return ArgType.outerGeneric(genericType, inner);
-			} else {
-				consume(';');
-				return genericType;
+		ArgType genericType = ArgType.generic(obj, genArr);
+		if (!lookAhead('.')) {
+			consume(';');
+			return genericType;
+		}
+		consume('.');
+		next();
+		// type parsing not completed, proceed to inner class
+		ArgType inner = consumeObjectType(true);
+		if (inner == null) {
+			throw new JadxRuntimeException("No inner type found: " + debugString());
+		}
+		// for every nested inner type create nested type object
+		while (lookAhead('.')) {
+			genericType = ArgType.outerGeneric(genericType, inner);
+			consume('.');
+			next();
+			inner = consumeObjectType(true);
+			if (inner == null) {
+				throw new JadxRuntimeException("Unexpected inner type found: " + debugString());
 			}
 		}
+		return ArgType.outerGeneric(genericType, inner);
 	}
 
 	private ArgType[] consumeGenericArgs() {

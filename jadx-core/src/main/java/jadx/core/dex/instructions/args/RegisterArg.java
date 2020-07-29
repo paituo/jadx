@@ -7,10 +7,12 @@ import org.jetbrains.annotations.Nullable;
 
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.nodes.InsnNode;
+import jadx.core.dex.nodes.MethodNode;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
 public class RegisterArg extends InsnArg implements Named {
 	public static final String THIS_ARG_NAME = "this";
+	public static final String SUPER_ARG_NAME = "super";
 
 	protected final int regNum;
 	// not null after SSATransform pass
@@ -87,6 +89,9 @@ public class RegisterArg extends InsnArg implements Named {
 
 	@Override
 	public String getName() {
+		if (isSuper()) {
+			return SUPER_ARG_NAME;
+		}
 		if (isThis()) {
 			return THIS_ARG_NAME;
 		}
@@ -94,6 +99,10 @@ public class RegisterArg extends InsnArg implements Named {
 			return null;
 		}
 		return sVar.getName();
+	}
+
+	private boolean isSuper() {
+		return contains(AFlag.SUPER);
 	}
 
 	@Override
@@ -119,11 +128,25 @@ public class RegisterArg extends InsnArg implements Named {
 
 	@Override
 	public RegisterArg duplicate() {
-		return duplicate(getRegNum(), sVar);
+		return duplicate(getRegNum(), getInitType(), sVar);
+	}
+
+	public RegisterArg duplicate(ArgType initType) {
+		return duplicate(getRegNum(), initType, sVar);
+	}
+
+	public RegisterArg duplicateWithNewSSAVar(MethodNode mth) {
+		RegisterArg duplicate = duplicate(regNum, getInitType(), null);
+		mth.makeNewSVar(duplicate);
+		return duplicate;
 	}
 
 	public RegisterArg duplicate(int regNum, @Nullable SSAVar sVar) {
-		RegisterArg dup = new RegisterArg(regNum, getInitType());
+		return duplicate(regNum, getInitType(), sVar);
+	}
+
+	public RegisterArg duplicate(int regNum, ArgType initType, @Nullable SSAVar sVar) {
+		RegisterArg dup = new RegisterArg(regNum, initType);
 		if (sVar != null) {
 			// only 'set' here, 'assign' or 'use' will binds later
 			dup.setSVar(sVar);

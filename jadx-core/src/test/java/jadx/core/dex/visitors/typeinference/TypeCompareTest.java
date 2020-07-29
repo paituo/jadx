@@ -23,6 +23,7 @@ import static jadx.core.dex.instructions.args.ArgType.INT;
 import static jadx.core.dex.instructions.args.ArgType.NARROW;
 import static jadx.core.dex.instructions.args.ArgType.NARROW_INTEGRAL;
 import static jadx.core.dex.instructions.args.ArgType.OBJECT;
+import static jadx.core.dex.instructions.args.ArgType.SHORT;
 import static jadx.core.dex.instructions.args.ArgType.STRING;
 import static jadx.core.dex.instructions.args.ArgType.UNKNOWN;
 import static jadx.core.dex.instructions.args.ArgType.UNKNOWN_ARRAY;
@@ -43,7 +44,7 @@ public class TypeCompareTest {
 	public void init() {
 		JadxArgs args = new JadxArgs();
 		RootNode root = new RootNode(args);
-		root.load(Collections.emptyList());
+		root.loadClasses(Collections.emptyList());
 		root.initClassPath();
 		compare = new TypeCompare(root);
 	}
@@ -51,8 +52,6 @@ public class TypeCompareTest {
 	@Test
 	public void compareTypes() {
 		firstIsNarrow(INT, UNKNOWN);
-
-		firstIsNarrow(BOOLEAN, INT);
 
 		firstIsNarrow(array(UNKNOWN), UNKNOWN);
 		firstIsNarrow(array(UNKNOWN), NARROW);
@@ -62,7 +61,9 @@ public class TypeCompareTest {
 	public void comparePrimitives() {
 		check(INT, UNKNOWN_OBJECT, TypeCompareEnum.CONFLICT);
 		check(INT, OBJECT, TypeCompareEnum.CONFLICT);
+		check(INT, BOOLEAN, TypeCompareEnum.CONFLICT);
 		check(INT, CHAR, TypeCompareEnum.WIDER);
+		check(INT, SHORT, TypeCompareEnum.WIDER);
 
 		firstIsNarrow(CHAR, NARROW_INTEGRAL);
 		firstIsNarrow(array(CHAR), UNKNOWN_OBJECT);
@@ -153,6 +154,16 @@ public class TypeCompareTest {
 		ArgType vType = ArgType.genericType("V");
 		// TODO: use extend types from generic declaration for more strict checks
 		check(vType, ArgType.STRING, TypeCompareEnum.CONFLICT);
+	}
+
+	@Test
+	public void compareOuterGenerics() {
+		ArgType hashMapType = object("java.util.HashMap");
+		ArgType innerEntrySetType = object("EntrySet");
+		ArgType firstInstance = ArgType.outerGeneric(generic(hashMapType, STRING, STRING), innerEntrySetType);
+		ArgType secondInstance = ArgType.outerGeneric(generic(hashMapType, OBJECT, OBJECT), innerEntrySetType);
+
+		check(firstInstance, secondInstance, TypeCompareEnum.NARROW);
 	}
 
 	private void firstIsNarrow(ArgType first, ArgType second) {
